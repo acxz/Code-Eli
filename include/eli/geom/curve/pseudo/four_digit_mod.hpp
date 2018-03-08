@@ -10,8 +10,8 @@
 *    David D. Marshall - initial code and implementation
 ********************************************************************************/
 
-#ifndef eli_geom_curve_pseudo_four_digit_hpp
-#define eli_geom_curve_pseudo_four_digit_hpp
+#ifndef eli_geom_curve_pseudo_four_digit_mod_hpp
+#define eli_geom_curve_pseudo_four_digit_mod_hpp
 
 #include <string>    // std::string
 #include <sstream>   // std::ostringstream, std::istringstream
@@ -29,30 +29,30 @@ namespace eli
       namespace pseudo
       {
         template<typename data__>
-        class four_digit
+        class four_digit_mod
         {
           public:
             typedef data__ data_type;
             typedef Eigen::Matrix<data_type, 1, 2> point_type;
-            typedef Eigen::Matrix<data_type, 5, 1> coefficient_type;
+            typedef Eigen::Matrix<data_type, 4, 1> coefficient_type;
             typedef typename point_type::Index index_type;
 
           public:
-            four_digit() : thickness(00), camber(0), camber_loc(0), sharp_te(false)
+            four_digit_mod() : thickness(00), camber(0), camber_loc(0), thickness_loc(5), sharp_te(false)
             {
               recalc_params();
               recalc_coefficients();
             }
 
-            four_digit(const four_digit<data_type> &fs)
-             : thickness(fs.thickness), camber(fs.camber), camber_loc(fs.camber_loc),
+            four_digit_mod(const four_digit_mod<data_type> &fs)
+             : thickness(fs.thickness), camber(fs.camber), camber_loc(fs.camber_loc), thickness_loc(fs.thickness_loc),
                sharp_te(fs.sharp_te)
             {
               recalc_params();
               recalc_coefficients();
             }
 
-            coefficient_type get_thickness_coefficients() const {return a;}
+            coefficient_type get_thickness_coefficients_front() const {return a;}
 
             data_type get_t0() const {return static_cast<data_type>(-1);}
             data_type get_tmax() const {return static_cast<data_type>(1);}
@@ -231,23 +231,30 @@ namespace eli
 
               p=camber/one_hundred;
               m=camber_loc/ten;
+              mt=thickness_loc/ten;
               t=thickness/one_hundred;
             }
 
             void recalc_coefficients()
             {
-              typedef Eigen::Matrix<data_type, 5, 5> coefficient_matrix_type;
+              typedef Eigen::Matrix<data_type, 4, 4> coefficient_matrix_type;
 
-              coefficient_matrix_type coef_mat;
+              coefficient_matrix_type coef_mat_A, coef_mat_B;
               coefficient_type rhs;
-              coefficient_type orig_a;
+              coefficient_type orig_a, orig_d;
 
               // set the specified coefficients
-              orig_a << static_cast<data_type>(0.2969),
-                        static_cast<data_type>(-0.1260),
-                        static_cast<data_type>(-0.3516),
-                        static_cast<data_type>(0.2843),
-                        static_cast<data_type>(-0.1015);
+              orig_a << static_cast<data_type>(0.989665),
+                        static_cast<data_type>(-0.239250),
+                        static_cast<data_type>(-0.041000),
+                        static_cast<data_type>(-0.559400);
+
+              // set the specified coefficients
+              orig_d << static_cast<data_type>(0.010000),
+                      static_cast<data_type>(2.325000),
+                      static_cast<data_type>(-3.420000),
+                      static_cast<data_type>(1.460000);
+
 
               // if blunt trailing edge, then use specified coefficients
               if (!sharp_trailing_edge())
@@ -260,20 +267,31 @@ namespace eli
               // are placed on thickness distribution
 
               // calculate the constraint coefficients
-              calc_four_digit_args(coef_mat, 0, static_cast<data_type>(1));        // (1) trailing edge location
-              calc_four_digit_der_args(coef_mat, 1, static_cast<data_type>(1));    // (2) trailing edge slope
-              calc_four_digit_args(coef_mat, 2, static_cast<data_type>(0.1));      // (3) leading edge shape
-              calc_four_digit_args(coef_mat, 3, static_cast<data_type>(0.3));      // (4) thickness at x/c=0.3 (should be max thickness location, but isn't)
-              calc_four_digit_der_args(coef_mat, 4, static_cast<data_type>(0.3));  // (5) slope at x/c=0.3 (should be zero slope at max thickness, but isn't)
-
+              coef_mat_A(0,0) = static_cast<data_type>(1);                                             // (1) Set LE radius
+              calc_four_digit_mod_front_args(coef_mat_A, 1, static_cast<data_type>(mt));      // (2) thickness at x/c=mt
+              calc_four_digit_mod_front_der_args(coef_mat_A, 2, static_cast<data_type>(mt));  // (3) slope at x/c=mt
+              calc_four_digit_mod_front_der2_args(coef_mat_A, 3, static_cast<data_type>(mt)); // (4) radius at x/c=mt
               // calculate the corresponding constraints for the blunt trailing edge
-              rhs=coef_mat*orig_a;
+              rhs=coef_mat_A*orig_a;
 
               printf("\nRHS\n");
               for(int i = 0; i < rhs.size(); i++ )
               {
                 printf( "%d %g\n", i, rhs[i] );
               }
+
+              printf("Rle %g\n", rhs[0] * rhs[0] / 2.0 );
+
+
+              data_type Rref = (1.0-mt)*(1.0-mt)/(2.0*0.1*orig_d(1)*(1.0-mt)-0.588);
+
+              printf("Rmt %g Rref %g\n", 1.0 / rhs[3], Rref );
+
+
+//              0 0.989665
+//              1 0.451493
+//              2 0.488548
+//              3 -2.59465
 
 //              RHS
 //              i Actual              Theory
@@ -284,33 +302,66 @@ namespace eli
 //              4 -0.000129621        0.0     Max thickness slope
 
               // correct the trailing edge thickness constraint to zero while leaving the rest un changed
-              rhs(0)=static_cast<data_type>(0);
-              a=coef_mat.lu().solve(rhs);
+//              rhs(0)=static_cast<data_type>(0);
+//              a=coef_mat_A.lu().solve(rhs);
             }
 
             template<typename Derived1>
-            static void calc_four_digit_args(Eigen::MatrixBase<Derived1> &A, const typename Derived1::Index &i, const data_type &xi)
+            static void calc_four_digit_mod_front_args(Eigen::MatrixBase<Derived1> &A, const typename Derived1::Index &i, const data_type &xi)
             {
-              data_type xi2(xi*xi), xi3(xi2*xi), xi4(xi3*xi);
+              data_type xi2(xi*xi), xi3(xi2*xi);
 
               A(i,0)=std::sqrt(xi);
               A(i,1)=xi;
               A(i,2)=xi2;
               A(i,3)=xi3;
-              A(i,4)=xi4;
             }
 
             template<typename Derived1>
-            static void calc_four_digit_der_args(Eigen::MatrixBase<Derived1> &A, const typename Derived1::Index &i, const data_type &xi)
+            static void calc_four_digit_mod_rear_args(Eigen::MatrixBase<Derived1> &B, const typename Derived1::Index &i, const data_type &xi)
             {
-              data_type xi2(xi*xi), xi3(xi2*xi);
+              const data_type omx( static_cast<data_type>(1) - xi );
+              const data_type omx2(omx*omx), omx3(omx*omx2);
+
+              B(i,0)=static_cast<data_type>(1);
+              B(i,1)=omx;
+              B(i,2)=omx2;
+              B(i,3)=omx3;
+            }
+
+            template<typename Derived1>
+            static void calc_four_digit_mod_front_der_args(Eigen::MatrixBase<Derived1> &A, const typename Derived1::Index &i, const data_type &xi)
+            {
+              data_type xi2(xi*xi);
 
               A(i,0)=static_cast<data_type>(0.5)/std::sqrt(xi);
               A(i,1)=static_cast<data_type>(1);
               A(i,2)=static_cast<data_type>(2)*xi;
               A(i,3)=static_cast<data_type>(3)*xi2;
-              A(i,4)=static_cast<data_type>(4)*xi3;
             }
+
+            template<typename Derived1>
+            static void calc_four_digit_mod_rear_der_args(Eigen::MatrixBase<Derived1> &B, const typename Derived1::Index &i, const data_type &xi)
+            {
+              const data_type omx( static_cast<data_type>(1) - xi );
+              const data_type omx2(omx*omx), omx3(omx*omx2);
+
+              B(i,0)=static_cast<data_type>(0);
+              B(i,1)=static_cast<data_type>(-1);
+              B(i,2)=static_cast<data_type>(-2)*omx;
+              B(i,3)=static_cast<data_type>(-3)*omx2;
+            }
+
+            template<typename Derived1>
+            static void calc_four_digit_mod_front_der2_args(Eigen::MatrixBase<Derived1> &A, const typename Derived1::Index &i, const data_type &xi)
+            {
+              A(i,0)=static_cast<data_type>(-1) / ( std::sqrt(xi) * xi * static_cast<data_type>(4) );
+              A(i,1)=static_cast<data_type>(0);
+              A(i,2)=static_cast<data_type>(2);
+              A(i,3)=static_cast<data_type>(6)*xi;
+            }
+
+
             void calc_camber(data_type &y, data_type &yp, data_type &ypp, data_type &yppp, const data_type &xi) const
             {
               // check to make sure given valid parametric value
@@ -354,8 +405,7 @@ namespace eli
               // check to make sure given valid parametric value
               assert((xi>=0) && (xi<=1));
 
-              const data_type zero(0), one(1), two(2), three(3), four(4), six(6), twelve(12), half(one/two), quarter(one/four);
-              const data_type xi2(xi*xi), xi3(xi*xi2), xi4(xi2*xi2), sqrtxi(std::sqrt(xi));
+              const data_type zero(0), one(1), two(2), three(3), four(4), six(6), half(one/two), quarter(one/four);
               const data_type trat(t/static_cast<data_type>(0.20));
 
               // short circuit for no thickness
@@ -378,13 +428,28 @@ namespace eli
               {
                 y=zero;
                 yp=trat*(a.sum()-half*a(0));
-                ypp=trat*(-quarter*a(0)+two*a(2)+six*a(3)+twelve*a(4));
+                ypp=trat*(-quarter*a(0)+two*a(2)+six*a(3));
                 return;
               }
 
-              y=trat*(a(0)*sqrtxi+a(1)*xi+a(2)*xi2+a(3)*xi3+a(4)*xi4);
-              yp=trat*(half*a(0)/sqrtxi+a(1)+two*a(2)*xi+three*a(3)*xi2+four*a(4)*xi3);
-              ypp=trat*(-quarter*a(0)/sqrtxi/xi+two*a(2)+six*a(3)*xi+twelve*a(4)*xi2);
+              if (xi<mt)
+              {
+                const data_type xi2(xi*xi), xi3(xi*xi2), sqrtxi(std::sqrt(xi));
+
+                y=trat*(a(0)*sqrtxi+a(1)*xi+a(2)*xi2+a(3)*xi3);
+                yp=trat*(half*a(0)/sqrtxi+a(1)+two*a(2)*xi+three*a(3)*xi2);
+                ypp=trat*(-quarter*a(0)/sqrtxi/xi+two*a(2)+six*a(3)*xi);
+              }
+              else
+              {
+                const data_type omx( one - xi );
+                const data_type omx2(omx*omx), omx3(omx*omx2);
+
+                y=trat*( d(0)+d(1)*omx+d(2)*omx2+d(3)*omx3 );
+                yp=trat*( -d(1) - d(2)*two*omx - d(3)*three*omx2 );
+                ypp=trat*( d(2)*two + d(3)*six*omx );
+              }
+
             }
 
           private:
@@ -394,12 +459,16 @@ namespace eli
                                     // interpreted as 100 times the maximum camber.
             data_type camber_loc;   // chord-wise location of maximum camber index (integer [0,9]).
                                     // Index is interpreted as 10 times the maximum camber location.
+            data_type thickness_loc; // chord-wise location of maximum thickness index (integer [0,9]).
+                                    // Index is interpreted as 10 times the maximum camber location.
 
             data_type m;  // location of maximum camber
+            data_type mt;  // location of maximum thickness
             data_type p;  // maximum camber
             data_type t;  // maximum thickness
             bool sharp_te; // flag to indicate if the trailing edge should be sharp
             coefficient_type a; // coefficients for thickness distribution
+            coefficient_type d; // coefficients for thickness distribution
         };
       }
     }
